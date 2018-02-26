@@ -118,7 +118,7 @@ int main (void) {
 					badCommand = true;
 				} 
 				else {
-					dup2(0, file_d);
+					dup2(file_d, 0);
 				}
 			}
 			//set fd 1 to filename descriptor for writing
@@ -132,7 +132,7 @@ int main (void) {
 					badCommand = true;
 				} 
 				else {
-					dup2(1, file_d);
+					dup2(file_d, 1);
 				}
 			}
 		}
@@ -152,7 +152,7 @@ int main (void) {
 
         //when command received, fork current process and exec commend in child
 		childExitMethod = -5;
-        thisProcessId = fork();
+		thisProcessId = fork();
         switch (thisProcessId) {
 			//error
             case -1:                    
@@ -173,7 +173,7 @@ int main (void) {
 				if( WIFEXITED(childExitMethod) ) {
 					exitStatus = WEXITSTATUS( childExitMethod );
 					if (exitStatus != 0) {
-						perror("child process exited with %d", exitStatus); 
+						fprintf(stderr, "child process exited with %d\n", exitStatus); 
 						fflush(stderr);
 					}
 				}
