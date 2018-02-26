@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <signal.h>
 
 #define true 1
 #define false 0
@@ -26,7 +27,7 @@ int main (void) {
     size_t maxUserInput = BUF_LEN;
 	int inputLength;
 
-	pid_t thisProcessId;
+	pid_t spawnPid;
     int childExitMethod;
 	int exitStatus;
 
@@ -52,16 +53,28 @@ int main (void) {
 	int default_1 = dup(1);
 	int default_2 = dup(2);
 
-	//TODO: catch SIGINT
+	//signal catchers
+	struct sigaction SIGINT_action = {0};
+	struct sigaction SIGSTP_action = {0};
 
-	//TODO: catch SIGSTP
-	
+	//TODO: kill child when terminated
+
+	//save this process id as int and string
+	int thisPid = getpid();
+	char* pidString = NULL;
+	asprintf(&pidString, "%d", thisPid);	
+
 	if ( getcwd(cwd, sizeof(cwd) ) == NULL ) {
 		perror("could not get current working directory");
 		exit(1);
 	}
 
     while( true ) {
+		//reset 0, 1, 2 file descriptors
+		dup2(default_0, 0);
+		dup2(default_1, 1);
+		dup2(default_2, 2);
+		
 		badCommand = false;
 
 		memset(commandArgs, 0, sizeof(commandArgs));
@@ -71,11 +84,6 @@ int main (void) {
 
 		pauseShell = true;
 
-		//reset 0, 1, 2 file descriptors
-		dup2(default_0, 0);
-		dup2(default_1, 1);
-		dup2(default_2, 2);
-		
         //prompt user for input
         printf(": ");
         fflush(stdout);
@@ -84,6 +92,13 @@ int main (void) {
         
 		parseUserInput(userInput, commandArgs, commandOpts, &numArgs, &numOpts);
 
+		//replace $$ with pid
+		for( i=0; i < numArgs; i++) {
+			if( strcmp(commandArgs[i], "$$") == 0 ) {
+				commandArgs[i] = pidString;	
+			}
+		}
+		
 		//handle exit, cd, status, comments 
 		if( strcmp(commandArgs[0], "exit") == 0 ) {
             break;
@@ -152,15 +167,14 @@ int main (void) {
 
         //when command received, fork current process and exec commend in child
 		childExitMethod = -5;
-		thisProcessId = fork();
-        switch (thisProcessId) {
+		spawnPid = fork();
+        switch (spawnPid) {
 			//error
             case -1:                    
                 perror("process fork error!");
 				exit(1); break;
 			//child
 			case 0:
-				//TODO:
 				execvp( commandArgs[0], commandArgs );
 				perror("CHILD: exec failure!\n");
 				exit(2); break;
@@ -168,7 +182,7 @@ int main (void) {
 			default:
                 //halt program if not background
 				if (pauseShell) {
-	                waitpid(thisProcessId, &childExitMethod, 0);
+	                waitpid(spawnPid, &childExitMethod, 0);
     			}
 				if( WIFEXITED(childExitMethod) ) {
 					exitStatus = WEXITSTATUS( childExitMethod );
@@ -178,7 +192,7 @@ int main (void) {
 					}
 				}
 				else {
-					perror("child exited by signal");
+					perror("child exited by signal\n");
 					fflush(stderr);
 				}
                 break;
@@ -187,6 +201,7 @@ int main (void) {
     }
 
     free (userInput);
+	free (pidString);
 
     return 0;
 }
@@ -216,6 +231,7 @@ void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], 
 
 		tok = strtok(NULL, " " );
 	}
+
 
 	//store remaining options in commandOpts
 	while( tok != NULL) {
