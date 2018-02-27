@@ -14,8 +14,21 @@
 #define BUF_LEN 2048
 #define ARG_TOT 512
 
-//Signal handlers
+//GLOBAL
+int foregroundOnly = false;
 
+//Signal handlers
+void catchSIGTSTP(int signum) {
+		if ( foregroundOnly == false ) {
+			foregroundOnly = true;
+			printf("Entering foreground-only mode (& is now ignored)\n");
+			fflush(stdout);
+		}
+		else {
+			foregroundOnly = false;
+			printf("Exiting foreground-only mode\n");
+		}
+}
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
@@ -58,17 +71,19 @@ int main (void) {
 
 		//signal catchers
 		struct sigaction SIGINT_action = {0};
-		struct sigaction SIGSTP_action = {0};
+		struct sigaction SIGTSTP_action = {0};
 
 	//TODO: kill child zombie when child terminates
 
 	//setup signal actions
-	SIGINT_action.sa_handler = SIG_IGN;
-	//sigfillset(&SIGINT_action.sa_mask);
-	//SIGINT_action.sa_flags = 0;
-	
-	//bind signal actions to signals
-	sigaction(SIGINT, &SIGINT_action, NULL);
+	SIGINT_action.sa_handler = SIG_IGN;				//ignore SIGINT
+	SIGTSTP_action.sa_handler = catchSIGTSTP;
+	sigfillset(&SIGTSTP_action.sa_mask);
+	SIGTSTP_action.sa_flags = SA_SIGINFO;
+
+	//TODO: bind signal actions to signals
+	//sigaction(SIGINT, &SIGINT_action, NULL);
+	//sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
 	//save this process id as int and string
 	int thisPid = getpid();
@@ -86,18 +101,20 @@ int main (void) {
 		dup2(default_1, 1);
 		dup2(default_2, 2);
 		
+		//reset flags
 		badCommand = false;
+		pauseShell = true;
 
 		memset(commandArgs, 0, sizeof(commandArgs));
 		numArgs = 0;
 		memset(commandOpts, 0, sizeof(commandArgs));
 		numOpts = 0;
 
-		pauseShell = true;
 
         //prompt user for input
         printf(": ");
         fflush(stdout);
+		fflush(stdin);
 		inputLength = getline( &userInput, &maxUserInput, stdin);
         userInput[strlen(userInput) - 1]  = '\0';
         
@@ -174,10 +191,17 @@ int main (void) {
 			}
 
 			//if last option is &, make child process background (don't pause Shell)
-			if( numOpts > 0 && strcmp( commandOpts[numOpts - 1], "&" ) == 0 ){
+			if(  foregroundOnly == false && numOpts > 0 && strcmp( commandOpts[numOpts - 1], "&" ) == 0 ){
 				pauseShell = false;
-				//TODO: redirect bg i/o to dev/null
-				
+				// redirect bg process i/o to dev/null
+				if(STDIN_FILENO == fileno(stdin)){
+					file_d = open("/dev/null", O_RDONLY);	
+					dup2(file_d, 0);
+				}
+				if(STDOUT_FILENO == fileno(stdout)) {
+					file_d = open("/dev/null", O_WRONLY);	
+					dup2(file_d, 1);
+				}
 			}
 
 			//when command received, fork current process and exec commend in child
