@@ -16,25 +16,32 @@
 
 //GLOBAL
 int foregroundOnly = false;
-
-//Signal handlers
-void catchSIGTSTP(int signum) {
-		if ( foregroundOnly == false ) {
-			foregroundOnly = true;
-			printf("\nEntering foreground-only mode (& is now ignored)");
-			fflush(stdout);
-		}
-		else {
-			foregroundOnly = false;
-			printf("\nExiting foreground-only mode");
-			fflush(stdout);
-		}
-		
-}
+pid_t foregroundProcess = 0;
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
 int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pauseShell) ;
+
+
+//Signal handlers
+void catchSIGINT(int signo) {
+	if (foregroundProcess != 0) {
+		kill( foregroundProcess, SIGTERM);
+	}
+}
+
+void catchSIGTSTP(int signo) {
+	if ( foregroundOnly == false ) {
+		foregroundOnly = true;
+		printf("\nEntering foreground-only mode (& is now ignored)");
+		fflush(stdout);
+	}
+	else {
+		foregroundOnly = false;
+		printf("\nExiting foreground-only mode");
+		fflush(stdout);
+	}
+}
 
 
 int main (void) {
@@ -69,16 +76,20 @@ int main (void) {
 		struct sigaction SIGINT_action = {0};
 		struct sigaction SIGTSTP_action = {0};
 
+
 	//TODO: kill child zombie when child terminates
 
 	//setup signal actions
-	SIGINT_action.sa_handler = SIG_IGN;				//ignore SIGINT
+	SIGINT_action.sa_handler = catchSIGINT;
+	sigfillset(&SIGINT_action.sa_mask);
+	SIGINT_action.sa_flags = 0;
+	
 	SIGTSTP_action.sa_handler = catchSIGTSTP;
 	sigfillset(&SIGTSTP_action.sa_mask);
 	SIGTSTP_action.sa_flags = SA_RESTART;
 
-	//TODO: bind signal actions to signals
-	//sigaction(SIGINT, &SIGINT_action, NULL);
+	// bind signal actions to signals
+	sigaction(SIGINT, &SIGINT_action, NULL);
 	sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
 	//save this process id as int and string
@@ -113,7 +124,8 @@ int main (void) {
 			fflush(stdin);
 	
 			inputLength = getline( &userInput, &maxUserInput, stdin);
-    		if ( inputLength == -1 ) {
+    
+			if ( inputLength == -1 ) {
 				clearerr(stdin);
 				continue;
 			}
@@ -158,9 +170,9 @@ int main (void) {
 		}
 
 
-		 if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ) 
+		if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ){ 
 			continue; 
-
+		}
 		
 		//when command received, fork current process and exec commend in child
 		childExitMethod = -5;
@@ -180,9 +192,11 @@ int main (void) {
 			default:
 				//halt program if not background
 				if (pauseShell) {
-				   
-				   waitpid(spawnId, &childExitMethod, 0);
 					
+					foregroundProcess = spawnId; 
+					waitpid(spawnId, &childExitMethod, 0);
+					foregroundProcess = 0;
+
 					if( WIFEXITED(childExitMethod) ) {
 						exitStatus = WEXITSTATUS( childExitMethod );
 						if (exitStatus != 0) {
@@ -212,7 +226,7 @@ int main (void) {
 
 
 
-/* ---------------------- FUNCTIONS ---------------------- */
+/* ------------------------------- FUNCTIONS ---------------------------------- */
 
 
 /*
@@ -223,7 +237,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 	char* filename;
 	int file_d;
 	int i;
-	int badCommand = false;
+	int noError = true;
 	
 	//check options for file input/output
 	for ( i=0; i<numOpts; i++ ) {
@@ -238,7 +252,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			if ( file_d < 0 ) {
 				fprintf(stderr, "error opening %s for read", filename);
 				fflush(stderr);
-				badCommand = true;
+				noError = false;
 			} 
 			else {
 				dup2(file_d, 0);
@@ -252,7 +266,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			if ( file_d < 0 ) {
 				fprintf(stderr, "error opening %s for write", filename);
 				fflush(stderr);
-				badCommand = true;
+				noError = false;
 			} 
 			else {
 				dup2(file_d, 1);
@@ -274,7 +288,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 		}
 	}
 
-	return badCommand;
+	return noError;
 }
 
 
