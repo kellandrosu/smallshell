@@ -21,17 +21,20 @@ int foregroundOnly = false;
 void catchSIGTSTP(int signum) {
 		if ( foregroundOnly == false ) {
 			foregroundOnly = true;
-			printf("Entering foreground-only mode (& is now ignored)\n");
+			printf("\nEntering foreground-only mode (& is now ignored)");
 			fflush(stdout);
 		}
 		else {
 			foregroundOnly = false;
-			printf("Exiting foreground-only mode\n");
+			printf("\nExiting foreground-only mode");
+			fflush(stdout);
 		}
+		
 }
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
+int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pauseShell) ;
 
 
 int main (void) {
@@ -53,13 +56,6 @@ int main (void) {
 		char* commandOpts[ARG_TOT];
 		int numOpts;
 
-		//flag to restart main loop
-		int badCommand;
-		
-		//pointer to input/output filename
-		char* filename;
-		int file_d;
-
 		//working directory string
 		char cwd[BUF_LEN];
 		int pauseShell;
@@ -79,11 +75,11 @@ int main (void) {
 	SIGINT_action.sa_handler = SIG_IGN;				//ignore SIGINT
 	SIGTSTP_action.sa_handler = catchSIGTSTP;
 	sigfillset(&SIGTSTP_action.sa_mask);
-	SIGTSTP_action.sa_flags = SA_SIGINFO;
+	SIGTSTP_action.sa_flags = SA_RESTART;
 
 	//TODO: bind signal actions to signals
 	//sigaction(SIGINT, &SIGINT_action, NULL);
-	//sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+	sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
 	//save this process id as int and string
 	int thisPid = getpid();
@@ -102,7 +98,6 @@ int main (void) {
 		dup2(default_2, 2);
 		
 		//reset flags
-		badCommand = false;
 		pauseShell = true;
 
 		memset(commandArgs, 0, sizeof(commandArgs));
@@ -112,138 +107,101 @@ int main (void) {
 
 
         //prompt user for input
-        printf(": ");
-        fflush(stdout);
-		fflush(stdin);
-		inputLength = getline( &userInput, &maxUserInput, stdin);
-        userInput[strlen(userInput) - 1]  = '\0';
-        
-		if ( strcmp(userInput, "") != 0 ) {
-
-			parseUserInput(userInput, commandArgs, commandOpts, &numArgs, &numOpts);
-
-			//replace $$ with pid
-			for( i=0; i < numArgs; i++) {
-				if( strcmp(commandArgs[i], "$$") == 0 ) {
-					commandArgs[i] = pidString;	
-				}
-			}
-			
-			//handle exit, cd, status, comments 
-			if( strcmp(commandArgs[0], "exit") == 0 ) {
-				break;
-			}
-			if( strcmp(commandArgs[0], "cd") == 0 ) {
-				if ( chdir( commandArgs[1] ) != 0 ) {
-					fprintf( stderr, "could not cd to %s\n", commandArgs[1]);
-					fflush(stderr);
-				}
-			}
-			if( strcmp(commandArgs[0], "status") == 0 ) {
-				//TODO: print out either the exit status or the terminating signal of the last foreground process (not both, processes killed by signals do not have exit statuses!) ran by your shell.
-			}
-			if ( commandArgs[0][0] == '#' ) {
+		while(true) {
+	        printf(": ");
+    	    fflush(stdout);
+			fflush(stdin);
+	
+			inputLength = getline( &userInput, &maxUserInput, stdin);
+    		if ( inputLength == -1 ) {
+				clearerr(stdin);
 				continue;
 			}
-
+			else {
+				userInput[strlen(userInput) - 1]  = '\0';
 			
-			//check options for file input/output
-			for ( i=0; i<numOpts; i++ ) {
-				
-				filename = commandOpts[i+1];
-				
-				//set fd 0 to filename descriptor for reading
-				if( strcmp( commandOpts[i], "<") == 0 ) {
-				
-					file_d = open(filename, O_RDONLY);
-					
-					if ( file_d < 0 ) {
-						fprintf(stderr, "error opening %s for read", filename);
-						fflush(stderr);
-						badCommand = true;
-					} 
-					else {
-						dup2(file_d, 0);
-					}
-				}
-				//set fd 1 to filename descriptor for writing
-				else if ( strcmp( commandOpts[i], ">") == 0 ) {
-				
-					file_d = open( filename, O_WRONLY | O_CREAT | O_TRUNC, 0755 );
-				
-					if ( file_d < 0 ) {
-						fprintf(stderr, "error opening %s for write", filename);
-						fflush(stderr);
-						badCommand = true;
-					} 
-					else {
-						dup2(file_d, 1);
-					}
+				if ( strcmp(userInput, "") != 0 ) {
+    	    		break;
 				}
 			}
+		}
 
-			if(badCommand) continue;		
-			
-			//get cwd
-			if ( getcwd(cwd, sizeof(cwd) ) == NULL ) {
-				perror("could not get current working directory");
-				exit(1);
+		parseUserInput(userInput, commandArgs, commandOpts, &numArgs, &numOpts);
+
+		//replace $$ with pid
+		for( i=0; i < numArgs; i++) {
+			if( strcmp(commandArgs[i], "$$") == 0 ) {
+				commandArgs[i] = pidString;	
 			}
-
-			//if last option is &, make child process background (don't pause Shell)
-			if(  foregroundOnly == false && numOpts > 0 && strcmp( commandOpts[numOpts - 1], "&" ) == 0 ){
-				pauseShell = false;
-				// redirect bg process i/o to dev/null
-				if(STDIN_FILENO == fileno(stdin)){
-					file_d = open("/dev/null", O_RDONLY);	
-					dup2(file_d, 0);
-				}
-				if(STDOUT_FILENO == fileno(stdout)) {
-					file_d = open("/dev/null", O_WRONLY);	
-					dup2(file_d, 1);
-				}
-			}
-
-			//when command received, fork current process and exec commend in child
-			childExitMethod = -5;
-			spawnId = fork();
+		}
 		
-			switch (spawnId) {
-				//error
-				case -1:                    
-					perror("process fork error!");
-					exit(1); break;
-				//child
-				case 0:
-					execvp( commandArgs[0], commandArgs );
-					perror("CHILD: exec failure!\n");
-					exit(2); break;
-				//parent
-				default:
-					//halt program if not background
-					if (pauseShell) {
-					   
-					   waitpid(spawnId, &childExitMethod, 0);
-						
-						if( WIFEXITED(childExitMethod) ) {
-							exitStatus = WEXITSTATUS( childExitMethod );
-							if (exitStatus != 0) {
-								fprintf(stderr, "child process exited with %d\n", exitStatus); 
-								fflush(stderr);
-							}
-						}
-						else if( WIFSIGNALED(childExitMethod) ) {
-							perror("child exited by signal\n");
+		//handle exit, cd, status, comments 
+		if( strcmp(commandArgs[0], "exit") == 0 ) {
+			break;
+		}
+		if( strcmp(commandArgs[0], "cd") == 0 ) {
+			if ( chdir( commandArgs[1] ) != 0 ) {
+				fprintf( stderr, "could not cd to %s\n", commandArgs[1]);
+				fflush(stderr);
+			}
+		}
+		if( strcmp(commandArgs[0], "status") == 0 ) {
+			//TODO: print out either the exit status or the terminating signal of the last foreground process (not both, processes killed by signals do not have exit statuses!) ran by your shell.
+		}
+
+		if ( commandArgs[0][0] == '#' )	continue;	
+		
+		//get cwd
+		if ( getcwd(cwd, sizeof(cwd) ) == NULL ) {
+			perror("could not get current working directory");
+			exit(1);
+		}
+
+
+		 if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ) 
+			continue; 
+
+		
+		//when command received, fork current process and exec commend in child
+		childExitMethod = -5;
+		spawnId = fork();
+	
+		switch (spawnId) {
+			//error
+			case -1:                    
+				perror("process fork error!");
+				exit(1); break;
+			//child
+			case 0:
+				execvp( commandArgs[0], commandArgs );
+				perror("CHILD: exec failure!\n");
+				exit(2); break;
+			//parent
+			default:
+				//halt program if not background
+				if (pauseShell) {
+				   
+				   waitpid(spawnId, &childExitMethod, 0);
+					
+					if( WIFEXITED(childExitMethod) ) {
+						exitStatus = WEXITSTATUS( childExitMethod );
+						if (exitStatus != 0) {
+							fprintf(stderr, "child process exited with %d\n", exitStatus); 
 							fflush(stderr);
 						}
 					}
-					else {
-						printf("%d\n", spawnId);
+					else if( WIFSIGNALED(childExitMethod) ) {
+						perror("child exited by signal\n");
+						fflush(stderr);
 					}
+				}
+				else {
+					printf("%d\n", spawnId);
+				}
 
-					break;
-			}
+				break;
 		}
+		
     }
 
     free (userInput);
@@ -255,6 +213,69 @@ int main (void) {
 
 
 /* ---------------------- FUNCTIONS ---------------------- */
+
+
+/*
+	parse options for io redirect and background
+	returns 0 (false) if there was an error opening files)
+*/
+int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pauseShell) {
+	char* filename;
+	int file_d;
+	int i;
+	int badCommand = false;
+	
+	//check options for file input/output
+	for ( i=0; i<numOpts; i++ ) {
+		
+		filename = commandOpts[i+1];
+		
+		//set fd 0 to filename descriptor for reading
+		if( strcmp( commandOpts[i], "<") == 0 ) {
+		
+			file_d = open(filename, O_RDONLY);
+			
+			if ( file_d < 0 ) {
+				fprintf(stderr, "error opening %s for read", filename);
+				fflush(stderr);
+				badCommand = true;
+			} 
+			else {
+				dup2(file_d, 0);
+			}
+		}
+		//set fd 1 to filename descriptor for writing
+		else if ( strcmp( commandOpts[i], ">") == 0 ) {
+		
+			file_d = open( filename, O_WRONLY | O_CREAT | O_TRUNC, 0755 );
+		
+			if ( file_d < 0 ) {
+				fprintf(stderr, "error opening %s for write", filename);
+				fflush(stderr);
+				badCommand = true;
+			} 
+			else {
+				dup2(file_d, 1);
+			}
+		}
+	}
+
+	//if last option is &, make child process background (don't pause Shell)
+	if(  foregroundOnly == false && numOpts > 0 && strcmp( commandOpts[numOpts - 1], "&" ) == 0 ){
+		*pauseShell = false;
+		// redirect bg process i/o to dev/null
+		if(STDIN_FILENO == fileno(stdin)){
+			file_d = open("/dev/null", O_RDONLY);	
+			dup2(file_d, 0);
+		}
+		if(STDOUT_FILENO == fileno(stdout)) {
+			file_d = open("/dev/null", O_WRONLY);	
+			dup2(file_d, 1);
+		}
+	}
+
+	return badCommand;
+}
 
 
 /*
