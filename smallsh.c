@@ -19,50 +19,63 @@
 //GLOBAL
 int foregroundOnly = false;
 pid_t foregroundProcess = 0;
+char* statStr = NULL;
+
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
 int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pauseShell) ;
+void getExitStatus( char** statString, int childExitMethod) ;
 
 
-//Signal handlers
-void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
+//SIGNAL HANDLERS
 	
-	int childExitMethod = -5;
-	pid_t spawnId = info->si_pid;	
-	int result;
-	result =  waitpid( spawnId, &childExitMethod, WNOHANG);
-	
-	if (result == spawnId ) {
-		//if child  is zombie, and needs to die
-		if ( WIFEXITED(childExitMethod) == 0 ) {	
-			kill(spawnId, SIGTERM);
+	//catches child signals and kills if child is zombie
+	void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
+		
+		int childExitMethod = -5;
+		pid_t spawnId = info->si_pid;	
+		
+		if ( spawnId == waitpid( spawnId, &childExitMethod, WNOHANG) ) {
+			//if child  is zombie, and needs to die
+			if ( WIFEXITED(childExitMethod) == 0 ) {	
+				kill(spawnId, SIGTERM);
+				getExitStatus( &statStr, childExitMethod );
+			}
+			else if (WIFSIGNALED(childExitMethod) == 0) {
+			}
+		}	
+	}
+
+	//catches SIGINT and kills foreground process
+	void catchSIGINT(int signo) {
+		
+		int childExitMethod;
+		
+		if (foregroundProcess != 0) {
+			kill( foregroundProcess, SIGINT);
+			if ( foregroundProcess == waitpid( foregroundProcess, &childExitMethod, 0) ) {
+				getExitStatus( &statStr, childExitMethod);
+			}
+			foregroundProcess = 0;
 		}
-		else if (WIFSIGNALED(childExitMethod) == 0) {
+	}
+
+	//catches SIGTSTP and sets foregroundOnly flag
+	void catchSIGTSTP(int signo) {
+		
+		char* enterMsg = "\nEntering foreground-only mode (& is now ignored)";
+		char* exitMsg = "\nExiting foreground-only mode";
+		
+		if ( foregroundOnly == false ) {
+			foregroundOnly = true;
+			write(STDOUT_FILENO, enterMsg, 49);
 		}
-	}	
-}
-
-void catchSIGINT(int signo) {
-	if (foregroundProcess != 0) {
-		kill( foregroundProcess, SIGTERM);
+		else {
+			foregroundOnly = false;
+			write(STDOUT_FILENO, exitMsg, 29);
+		}
 	}
-}
-
-void catchSIGTSTP(int signo) {
-	
-	char* enterMsg = "\nEntering foreground-only mode (& is now ignored)";
-	char* exitMsg = "\nExiting foreground-only mode";
-	
-	if ( foregroundOnly == false ) {
-		foregroundOnly = true;
-		write(STDOUT_FILENO, enterMsg, 49);
-	}
-	else {
-		foregroundOnly = false;
-		write(STDOUT_FILENO, exitMsg, 29);
-	}
-}
 
 
 
@@ -81,7 +94,6 @@ int main (void) {
 
 		pid_t spawnId;
 		int childExitMethod;
-		char* statStr = NULL;
 
 		//store command arguments and options as array elements
 		char* commandArgs[ARG_TOT];
@@ -153,10 +165,12 @@ int main (void) {
 		numOpts = 0;
 
 
-        //prompt user for input
+		//prompt user input
+	    printf(": ");
+    	fflush(stdout);
+        
+		//get user input
 		while(true) {
-	        printf(": ");
-    	    fflush(stdout);
 			fflush(stdin);
 	
 			inputLength = getline( &userInput, &maxUserInput, stdin);
@@ -174,9 +188,10 @@ int main (void) {
 			}
 		}
 
+	//fills commandArgs and commandOpts with pointers to tokenized userInput string
 		parseUserInput(userInput, commandArgs, commandOpts, &numArgs, &numOpts);
 
-		//replace $$ with pid
+	//replace $$ with pid
 		for( i=0; i < numArgs; i++) {
 			if( strcmp(commandArgs[i], "$$") == 0 ) {
 				commandArgs[i] = pidString;	
@@ -200,7 +215,6 @@ int main (void) {
 			}
 			continue;
 		}
-
 		if ( commandArgs[0][0] == '#' )	continue;	
 		
 	//get cwd
@@ -219,7 +233,6 @@ int main (void) {
 	//when command received, fork current process and exec commend in child
 		childExitMethod = -5;
 		spawnId = fork();
-	
 		switch (spawnId) {
 			//error
 			case -1:                    
@@ -238,16 +251,7 @@ int main (void) {
 					foregroundProcess = spawnId; 
 					waitpid(spawnId, &childExitMethod, 0);
 					foregroundProcess = 0;
-
-					if( WIFEXITED(childExitMethod) ) {
-						result = asprintf( &statStr, "exit value %d\n", WEXITSTATUS( childExitMethod ) );
-					}
-					else if( WIFSIGNALED(childExitMethod) ) {
-						result = asprintf( &statStr, "terminated by signal %d\n", WTERMSIG(childExitMethod) );
-					}
-					if (result <= 0 ) {
-						statStr = NULL;
-					}
+					getExitStatus( &statStr, childExitMethod );
 				}
 				else {
 					printf("%d\n", spawnId);
@@ -272,6 +276,26 @@ int main (void) {
 
 
 /* ------------------------------- FUNCTIONS ---------------------------------- */
+
+
+/*
+	stores the exit status string according to the childExitMethod
+*/
+void getExitStatus( char** statString, int childExitMethod) {
+
+	int result;
+	
+	if( WIFEXITED(childExitMethod) ) {
+		result = asprintf( statString, "exit value %d\n", WEXITSTATUS( childExitMethod ) );
+	}
+	else if( WIFSIGNALED(childExitMethod) ) {
+		result = asprintf( statString, "terminated by signal %d\n", WTERMSIG(childExitMethod) );
+	}
+	if (result <= 0 ) {
+		if (statString != NULL) free(statString);
+		statString = NULL;
+	}
+}
 
 
 /*
