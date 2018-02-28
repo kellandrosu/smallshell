@@ -19,7 +19,6 @@
 //GLOBAL
 int foregroundOnly = false;
 pid_t foregroundProcess = 0;
-pid_t lastProcessId = 0;
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
@@ -30,7 +29,6 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 	
 	int childExitMethod = -5;
-	int exitStatus;
 	pid_t spawnId = info->si_pid;	
 	int result;
 	result =  waitpid( spawnId, &childExitMethod, WNOHANG);
@@ -39,10 +37,8 @@ void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 		//if child  is zombie, and needs to die
 		if ( WIFEXITED(childExitMethod) == 0 ) {	
 			kill(spawnId, SIGTERM);
-			lastProcessId = spawnId;
 		}
 		else if (WIFSIGNALED(childExitMethod) == 0) {
-			lastProcessId = spawnId;
 		}
 	}	
 }
@@ -64,7 +60,7 @@ void catchSIGTSTP(int signo) {
 	}
 	else {
 		foregroundOnly = false;
-		write(STDOUT_FILENO, enterMsg, 29);
+		write(STDOUT_FILENO, exitMsg, 29);
 	}
 }
 
@@ -77,7 +73,7 @@ void catchSIGTSTP(int signo) {
 int main (void) {
 
 	//VARIABLE DECLARATIONS
-		int i;
+		int i, result;
 
 		char* userInput = NULL;
 		size_t maxUserInput = BUF_LEN;
@@ -85,7 +81,7 @@ int main (void) {
 
 		pid_t spawnId;
 		int childExitMethod;
-		int exitStatus;
+		char* statStr = NULL;
 
 		//store command arguments and options as array elements
 		char* commandArgs[ARG_TOT];
@@ -118,7 +114,7 @@ int main (void) {
 		SIGTSTP_action.sa_handler = catchSIGTSTP;
 
 		
-		//TODO: kill child zombie when child terminates
+		// kill child zombie when child terminates
 		SIGCHLD_action.sa_flags = SA_SIGINFO;
 		sigfillset(&SIGCHLD_action.sa_mask);
 		SIGCHLD_action.sa_sigaction = catchSIGCHLD;
@@ -187,7 +183,7 @@ int main (void) {
 			}
 		}
 		
-		//handle exit, cd, status, comments 
+	//handle exit, cd, status, comments 
 		if( strcmp(commandArgs[0], "exit") == 0 ) {
 			break;
 		}
@@ -198,23 +194,29 @@ int main (void) {
 			}
 		}
 		if( strcmp(commandArgs[0], "status") == 0 ) {
-			//TODO: print out either the exit status or the terminating signal of the last foreground process (not both, processes killed by signals do not have exit statuses!) ran by your shell.
+			if (statStr != NULL) {
+				printf(statStr);
+				fflush(stdout);
+			}
+			continue;
 		}
 
 		if ( commandArgs[0][0] == '#' )	continue;	
 		
-		//get cwd
+	//get cwd
 		if ( getcwd(cwd, sizeof(cwd) ) == NULL ) {
 			perror("could not get current working directory");
 			exit(1);
 		}
 
-
+		//if parse options returns false, then there was an error
 		if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ){ 
+			fprintf(stderr, "error parsing options\n");
+			fflush(stderr);
 			continue; 
 		}
 		
-		//when command received, fork current process and exec commend in child
+	//when command received, fork current process and exec commend in child
 		childExitMethod = -5;
 		spawnId = fork();
 	
@@ -238,15 +240,13 @@ int main (void) {
 					foregroundProcess = 0;
 
 					if( WIFEXITED(childExitMethod) ) {
-						exitStatus = WEXITSTATUS( childExitMethod );
-						if (exitStatus != 0) {
-							fprintf(stderr, "child process exited with %d\n", exitStatus); 
-							fflush(stderr);
-						}
+						result = asprintf( &statStr, "exit value %d\n", WEXITSTATUS( childExitMethod ) );
 					}
 					else if( WIFSIGNALED(childExitMethod) ) {
-						perror("child exited by signal\n");
-						fflush(stderr);
+						result = asprintf( &statStr, "terminated by signal %d\n", WTERMSIG(childExitMethod) );
+					}
+					if (result <= 0 ) {
+						statStr = NULL;
 					}
 				}
 				else {
@@ -257,8 +257,14 @@ int main (void) {
 		}	
     }
 
-    free (userInput);
-	free (pidString);
+	if (statStr != NULL ) 
+		free(statStr);
+	
+	if ( userInput != NULL)
+    	free (userInput);
+	
+	if (pidString != NULL)
+		free (pidString);
 
     return 0;
 }
