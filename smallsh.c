@@ -86,11 +86,14 @@ void getExitStatus( char** statString, int childExitMethod) ;
 int main (void) {
 
 	//VARIABLE DECLARATIONS
-		int i, result;
+		int i,  result;
 
-		char* userInput = NULL;
+		char* rawUserInput = NULL;
 		size_t maxUserInput = BUF_LEN;
 		int inputLength;
+		char fixedUserInput[BUF_LEN];
+		char* strCpyPtr;
+		char* pidSwapPtr;
 
 		pid_t spawnId;
 		int childExitMethod;
@@ -173,31 +176,39 @@ int main (void) {
 		while(true) {
 			fflush(stdin);
 	
-			inputLength = getline( &userInput, &maxUserInput, stdin);
+			inputLength = getline( &rawUserInput, &maxUserInput, stdin);
     
 			if ( inputLength == -1 ) {
 				clearerr(stdin);
 				continue;
 			}
 			else {
-				userInput[strlen(userInput) - 1]  = '\0';
+				rawUserInput[strlen(rawUserInput) - 1]  = '\0';
 			
-				if ( strcmp(userInput, "") != 0 ) {
+				if ( strcmp(rawUserInput, "") != 0 ) {
     	    		break;
 				}
 			}
 		}
 
-	//fills commandArgs and commandOpts with pointers to tokenized userInput string
-		parseUserInput(userInput, commandArgs, commandOpts, &numArgs, &numOpts);
-
-	//replace $$ with pid
-		for( i=0; i < numArgs; i++) {
-			if( strcmp(commandArgs[i], "$$") == 0 ) {
-				commandArgs[i] = pidString;	
-			}
-		}
+	//replace all instances of $$ with pid
+		fixedUserInput[0] = '\0';
+		strCpyPtr = rawUserInput;
+		pidSwapPtr = strstr( strCpyPtr, "$$" );
 		
+		while ( pidSwapPtr != NULL ) {		
+			strncat(fixedUserInput, strCpyPtr, pidSwapPtr - strCpyPtr);
+			strcat(fixedUserInput, pidString);
+			strCpyPtr = pidSwapPtr + strlen("$$");
+		
+			pidSwapPtr = strstr( strCpyPtr, "$$" );
+		} 
+		//cat remainder
+		strcat(fixedUserInput, strCpyPtr);
+
+	//fills commandArgs and commandOpts with pointers to tokenized fixedUserInput string
+		parseUserInput(fixedUserInput, commandArgs, commandOpts, &numArgs, &numOpts);
+
 	//handle exit, cd, status, comments 
 		if( strcmp(commandArgs[0], "exit") == 0 ) {
 			break;
@@ -264,8 +275,8 @@ int main (void) {
 	if (statStr != NULL ) 
 		free(statStr);
 	
-	if ( userInput != NULL)
-    	free (userInput);
+	if ( rawUserInput != NULL)
+    	free (rawUserInput);
 	
 	if (pidString != NULL)
 		free (pidString);
@@ -362,12 +373,12 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 
 
 /*
-	tokenizes userInput and points argument and option arrays at tokenized strings
+	tokenizes fixedUserInput and points argument and option arrays at tokenized strings
 */
-void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) {
+void parseUserInput( char* fixedUserInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) {
 
-	//tokize userInput store arg pointers in comamndArgs
-	char* tok = strtok(userInput, " ");
+	//tokize fixedUserInput store arg pointers in comamndArgs
+	char* tok = strtok(fixedUserInput, " ");
 
 	while( tok != NULL ) {
 		//break if find <, > or &
