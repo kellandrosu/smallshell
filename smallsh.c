@@ -214,10 +214,14 @@ int main (void) {
 			break;
 		}
 		if( strcmp(commandArgs[0], "cd") == 0 ) {
-			if ( chdir( commandArgs[1] ) != 0 ) {
+			if ( commandArgs[1] == NULL ) {
+				chdir(getenv("HOME"));
+			}		
+			else if ( chdir( commandArgs[1] ) == -1 ) {
 				fprintf( stderr, "could not cd to %s\n", commandArgs[1]);
 				fflush(stderr);
 			}
+			continue;
 		}
 		if( strcmp(commandArgs[0], "status") == 0 ) {
 			if (statStr != NULL) {
@@ -236,8 +240,6 @@ int main (void) {
 
 		//if parse options returns false, then there was an error
 		if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ){ 
-			fprintf(stderr, "error parsing options\n");
-			fflush(stderr);
 			continue; 
 		}
 		
@@ -247,12 +249,12 @@ int main (void) {
 		switch (spawnId) {
 			//error
 			case -1:                    
-				perror("process fork error!");
+				perror("process fork error: ");
 				exit(1); break;
 			//child
 			case 0:
 				execvp( commandArgs[0], commandArgs );
-				perror("CHILD: exec failure!\n");
+				perror("CHILD: exec failure: ");
 				exit(2); break;
 			//parent
 			default:
@@ -330,7 +332,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			file_d = open(filename, O_RDONLY);
 			
 			if ( file_d < 0 ) {
-				fprintf(stderr, "error opening %s for read", filename);
+				fprintf(stderr, "error opening %s for read\n", filename);
 				fflush(stderr);
 				noError = false;
 			} 
@@ -344,7 +346,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			file_d = open( filename, O_WRONLY | O_CREAT | O_TRUNC, 0755 );
 		
 			if ( file_d < 0 ) {
-				fprintf(stderr, "error opening %s for write", filename);
+				fprintf(stderr, "error opening %s for write\n", filename);
 				fflush(stderr);
 				noError = false;
 			} 
