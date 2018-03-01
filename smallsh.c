@@ -153,11 +153,6 @@ int main (void) {
 
     while( true ) {
 		
-		//reset 0, 1, 2 file descriptors
-		dup2(default_0, 0);
-		dup2(default_1, 1);
-		dup2(default_2, 2);
-		
 		//reset flags
 		pauseShell = true;
 
@@ -242,7 +237,11 @@ int main (void) {
 		if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ){ 
 			continue; 
 		}
-		
+	
+		if ( foregroundOnly == false  && numOpts > 0) {
+			pauseShell = ( strcmp(commandOpts[numOpts-1], "&") != 0 );
+		}
+
 	//when command received, fork current process and exec commend in child
 		childExitMethod = -5;
 		spawnId = fork();
@@ -258,6 +257,11 @@ int main (void) {
 				exit(2); break;
 			//parent
 			default:
+				//reset 0, 1, 2 file descriptors
+				dup2(default_0, 0);
+				dup2(default_1, 1);
+				dup2(default_2, 2);
+		
 				//halt program if not background
 				if (pauseShell) {
 					
@@ -268,6 +272,7 @@ int main (void) {
 				}
 				else {
 					printf("%d\n", spawnId);
+					fflush(stdout);
 				}
 
 				break;
