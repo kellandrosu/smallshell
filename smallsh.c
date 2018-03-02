@@ -18,13 +18,14 @@
 
 //GLOBAL
 int foregroundOnly = false;
+int bgProcessTerminated = false;
 pid_t foregroundProcess = 0;
 char* statStr = NULL;
 
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
-int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pauseShell) ;
+void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) ;
 void getExitStatus( char** statString, int childExitMethod) ;
 
 
@@ -33,17 +34,19 @@ void getExitStatus( char** statString, int childExitMethod) ;
 	//catches child signals and kills if child is zombie
 	void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 		
+		char* newline = "\n";
 		int childExitMethod = -5;
 		pid_t spawnId = info->si_pid;	
 		
 		if ( spawnId == waitpid( spawnId, &childExitMethod, WNOHANG) ) {
 			//if child  is zombie, and needs to die
-			if ( WIFEXITED(childExitMethod) == 0 ) {	
-				kill(spawnId, SIGTERM);
+			if ( WIFEXITED(childExitMethod) ) {	
 				getExitStatus( &statStr, childExitMethod );
+				bgProcessTerminated = true;
+				kill(spawnId, SIGTERM);
 			}
-			else if (WIFSIGNALED(childExitMethod) == 0) {
-			}
+//			else if (WIFSIGNALED(childExitMethod)) {
+//			}
 		}	
 	}
 
@@ -162,6 +165,11 @@ int main (void) {
 		memset(commandOpts, 0, sizeof(commandArgs));
 		numOpts = 0;
 
+		if (bgProcessTerminated == true ) {
+			printf(statStr);
+			fflush(stdout);
+			bgProcessTerminated = false;
+		}
 
 		//prompt user input
 	    printf(": ");
@@ -233,11 +241,6 @@ int main (void) {
 			exit(1);
 		}
 
-		//if parse options returns false, then there was an error
-		if ( parseOptions( commandOpts, numOpts, foregroundOnly, &pauseShell) == false ){ 
-			continue; 
-		}
-	
 		if ( foregroundOnly == false  && numOpts > 0) {
 			pauseShell = ( strcmp(commandOpts[numOpts-1], "&") != 0 );
 		}
@@ -252,12 +255,13 @@ int main (void) {
 				exit(1); break;
 			//child
 			case 0:
+				ioRedirect( commandOpts, numOpts, pauseShell);
 				execvp( commandArgs[0], commandArgs );
 				perror("CHILD: exec failure: ");
 				exit(2); break;
 			//parent
 			default:
-				//reset 0, 1, 2 file descriptors
+				//make sure 0, 1, 2 file descriptors are reset
 				dup2(default_0, 0);
 				dup2(default_1, 1);
 				dup2(default_2, 2);
@@ -304,10 +308,10 @@ void getExitStatus( char** statString, int childExitMethod) {
 	int result;
 	
 	if( WIFEXITED(childExitMethod) ) {
-		result = asprintf( statString, "exit value %d\n", WEXITSTATUS( childExitMethod ) );
+		result = asprintf( statString, "exit value %d            \n", WEXITSTATUS( childExitMethod ) );
 	}
 	else if( WIFSIGNALED(childExitMethod) ) {
-		result = asprintf( statString, "terminated by signal %d\n", WTERMSIG(childExitMethod) );
+		result = asprintf( statString, "terminated by signal %d  \n", WTERMSIG(childExitMethod));
 	}
 	if (result <= 0 ) {
 		if (statString != NULL) free(statString);
@@ -320,11 +324,10 @@ void getExitStatus( char** statString, int childExitMethod) {
 	parse options for io redirect and background
 	returns 0 (false) if there was an error opening files)
 */
-int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pauseShell) {
+void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
 	char* filename;
 	int file_d;
 	int i;
-	int noError = true;
 	
 	//check options for file input/output
 	for ( i=0; i<numOpts; i++ ) {
@@ -339,7 +342,6 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			if ( file_d < 0 ) {
 				fprintf(stderr, "error opening %s for read\n", filename);
 				fflush(stderr);
-				noError = false;
 			} 
 			else {
 				dup2(file_d, 0);
@@ -353,7 +355,6 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			if ( file_d < 0 ) {
 				fprintf(stderr, "error opening %s for write\n", filename);
 				fflush(stderr);
-				noError = false;
 			} 
 			else {
 				dup2(file_d, 1);
@@ -362,8 +363,7 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 	}
 
 	//if last option is &, make child process background (don't pause Shell)
-	if(  foregroundOnly == false && numOpts > 0 && strcmp( commandOpts[numOpts - 1], "&" ) == 0 ){
-		*pauseShell = false;
+	if( pauseShell == false ) {
 		// redirect bg process i/o to dev/null
 		if(STDIN_FILENO == fileno(stdin)){
 			file_d = open("/dev/null", O_RDONLY);	
@@ -374,8 +374,6 @@ int parseOptions( char* commandOpts[], int numOpts, int foregroundOnly, int* pau
 			dup2(file_d, 1);
 		}
 	}
-
-	return noError;
 }
 
 
