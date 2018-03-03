@@ -25,7 +25,7 @@ char* statStr = NULL;
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
-void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) ;
+int ioRedirect( char* commandOpts[], int numOpts, int pauseShell) ;
 void getExitStatus( char** statString, int childExitMethod) ;
 
 
@@ -255,10 +255,11 @@ int main (void) {
 				exit(1); break;
 			//child
 			case 0:
-				ioRedirect( commandOpts, numOpts, pauseShell);
-				execvp( commandArgs[0], commandArgs );
-				perror("CHILD: exec failure: ");
-				exit(2); break;
+				if ( ioRedirect( commandOpts, numOpts, pauseShell) == true ) {
+					execvp( commandArgs[0], commandArgs );
+				}
+	//			perror("CHILD: exec failure: ");
+				exit(1); break;
 			//parent
 			default:
 				//make sure 0, 1, 2 file descriptors are reset
@@ -273,9 +274,11 @@ int main (void) {
 					waitpid(spawnId, &childExitMethod, 0);
 					foregroundProcess = 0;
 					getExitStatus( &statStr, childExitMethod );
+					printf(statStr);
+					fflush(stdout);
 				}
 				else {
-					printf("%d\n", spawnId);
+					printf("background pid is %d\n", spawnId);
 					fflush(stdout);
 				}
 
@@ -324,7 +327,7 @@ void getExitStatus( char** statString, int childExitMethod) {
 	parse options for io redirect and background
 	returns 0 (false) if there was an error opening files)
 */
-void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
+int ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
 	char* filename;
 	int file_d;
 	int i;
@@ -340,8 +343,9 @@ void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
 			file_d = open(filename, O_RDONLY);
 			
 			if ( file_d < 0 ) {
-				fprintf(stderr, "error opening %s for read\n", filename);
+				fprintf(stderr, "could not open %s for input\n", filename);
 				fflush(stderr);
+				return false;
 			} 
 			else {
 				dup2(file_d, 0);
@@ -353,8 +357,9 @@ void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
 			file_d = open( filename, O_WRONLY | O_CREAT | O_TRUNC, 0755 );
 		
 			if ( file_d < 0 ) {
-				fprintf(stderr, "error opening %s for write\n", filename);
+				fprintf(stderr, "could not open %s for output\n", filename);
 				fflush(stderr);
+				return false;
 			} 
 			else {
 				dup2(file_d, 1);
@@ -374,6 +379,7 @@ void ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
 			dup2(file_d, 1);
 		}
 	}
+	return true;
 }
 
 
