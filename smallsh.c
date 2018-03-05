@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <signal.h>
+#include <errno.h>
 
 
 #define true 1
@@ -24,11 +25,11 @@ struct ProcessExitStatus {
 
 
 //GLOBAL
-int foregroundOnly = false;
-int bgProcessTerminated = false;
-pid_t foregroundProcess = 0;
+int foregroundOnly = false;				//global mode flag
+int bgProcessTerminated = false;		//flag to tell main whether background process was terminated
+pid_t foregound_pid = 0;
 struct ProcessExitStatus exitStatus;
-int zombieKilled;
+pid_t deadZombiePid;						
 
 
 
@@ -39,19 +40,29 @@ void printStatus ( struct ProcessExitStatus* process ) ;
 
 
 //SIGNAL HANDLERS
+//catches child signals and kills if child is zombie
+void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 	
-	//catches child signals and kills if child is zombie
-	void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
-		
-		char* newline = "\n";
-		int childExitMethod = -5;
-		pid_t spawnId = info->si_pid;	
-		
-		if ( spawnId == waitpid( spawnId, &childExitMethod, WNOHANG) ) {
+	char* newline = "\n";
+	int childExitMethod = -5;
+	pid_t spawnId = info->si_pid;	
+	int result;
+
+	//if the calling process was a killed zombie, ignore
+	if( spawnId != deadZombiePid ) {
+
+		//get the status of the calling process
+		do {
+			errno = 0;
+			result = waitpid( spawnId, &childExitMethod, WNOHANG); 
+		} while ( errno == EINTR && result == -1);
+
+
+		if ( spawnId == result ) {
 			
 			exitStatus.pid = spawnId;
 			
-			//if child  is zombie, and needs to die
+			//if child created signal, but exited, then is zombie and needs to die
 			if ( WIFEXITED(childExitMethod) ) {	
 				exitStatus.code = WEXITSTATUS(childExitMethod);
 				exitStatus.termBySignal = false;
@@ -59,66 +70,77 @@ void printStatus ( struct ProcessExitStatus* process ) ;
 
 				bgProcessTerminated = true;
 
-				zombieKilled = spawnId;
+				deadZombiePid = spawnId;	//so we ignore kill call for zombie processes
 				kill(spawnId, SIGTERM);
-			
 			}
-			else if (WIFSIGNALED(childExitMethod) && zombieKilled != spawnId ) {
-				exitStatus.pid = spawnId;
+
+			//otherwise if it was killed by signal, just get the signal info
+			else if ( WIFSIGNALED(childExitMethod) ) {
 				exitStatus.code = WTERMSIG(childExitMethod);
 				exitStatus.termBySignal = true;
-				if (foregroundOnly == false) {
+			
+				if ( foregroundOnly == true ) {
+					exitStatus.isBackground = false;
+				}			
+				else {
 					bgProcessTerminated = true;
 					exitStatus.isBackground = true;
 				}
-				else {
-					exitStatus.isBackground = false;
-				}
 			}
-		}	
-	}
-
-	//catches SIGINT and kills foreground process
-	void catchSIGINT(int signo) {
-		
-		int childExitMethod;
-		
-
-		if (foregroundProcess != 0) {
-			
-			kill( foregroundProcess, SIGINT);
-			if ( foregroundProcess == waitpid( foregroundProcess, &childExitMethod, 0) ) {
-				exitStatus.code = WTERMSIG(childExitMethod);
-				exitStatus.pid = foregroundProcess;
-				exitStatus.isBackground = false;
-				exitStatus.termBySignal = true;
-			}
-			foregroundProcess = 0;
 		}
 	}
+}
 
-	//catches SIGTSTP and sets foregroundOnly flag
-	void catchSIGTSTP(int signo) {
+
+//catches SIGINT and kills foreground process
+void catchSIGINT(int signo) {
+	
+	int childExitMethod;
+	int result;
+
+	if (foregound_pid != 0) {
 		
-		char* enterMsg = "\nEntering foreground-only mode (& is now ignored)";
-		char* exitMsg = "\nExiting foreground-only mode";
-		char* newline = "\n: ";
-		if ( foregroundOnly == false ) {
-			foregroundOnly = true;
-			write(STDOUT_FILENO, enterMsg, 49);
+		do {
+			errno = 0;
+			kill( foregound_pid, SIGTERM);
+			result = waitpid( foregound_pid, &childExitMethod, WNOHANG);
+		} while (errno == EINTR && result == -1);
+
+		if ( foregound_pid == result ) {
+			exitStatus.code = SIGINT;
+			exitStatus.pid = foregound_pid;
+			exitStatus.isBackground = false;
+			exitStatus.termBySignal = true;
+			foregound_pid = 0;
 		}
-		else {
-			foregroundOnly = false;
-			write(STDOUT_FILENO, exitMsg, 29);
+		else if ( result == -1 && errno == EINTR ) {
+			char* output = "error\n";
+			write(STDOUT_FILENO, output, 6); 
 		}
-		write(STDOUT_FILENO, newline, 3);
 	}
+}
+
+
+//catches SIGTSTP and sets foregroundOnly flag
+void catchSIGTSTP(int signo) {
+	
+	char* enterMsg = "\nEntering foreground-only mode (& is now ignored)";
+	char* exitMsg = "\nExiting foreground-only mode";
+	char* newline = "\n: ";
+	if ( foregroundOnly == false ) {
+		foregroundOnly = true;
+		write(STDOUT_FILENO, enterMsg, 49);
+	}
+	else {
+		foregroundOnly = false;
+		write(STDOUT_FILENO, exitMsg, 29);
+	}
+	write(STDOUT_FILENO, newline, 3);
+}
 
 
 
 /*-------------------------------   MAIN   ---------------------------------*/
-
-
 
 int main (void) {
 
@@ -160,7 +182,7 @@ int main (void) {
 
 	//setup signal actions
 		sigfillset(&SIGINT_action.sa_mask);
-		SIGINT_action.sa_flags = 0;
+		SIGINT_action.sa_flags = SA_RESTART;
 		SIGINT_action.sa_handler = catchSIGINT;
 		
 		sigfillset(&SIGTSTP_action.sa_mask);
@@ -169,7 +191,7 @@ int main (void) {
 
 		
 		// kill child zombie when child terminates
-		SIGCHLD_action.sa_flags = SA_SIGINFO;
+		SIGCHLD_action.sa_flags = SA_SIGINFO | SA_RESTART;
 		sigfillset(&SIGCHLD_action.sa_mask);
 		SIGCHLD_action.sa_sigaction = catchSIGCHLD;
 
@@ -201,17 +223,18 @@ int main (void) {
 		memset(commandOpts, 0, sizeof(commandArgs));
 		numOpts = 0;
 
-		if (bgProcessTerminated == true ) {
-			printStatus(&exitStatus);
-			fflush(stdout);
-			bgProcessTerminated = false;
-		}
 
 		//get user input
 		while(true) {
-		//prompt user input
-	    printf(": ");
-    	fflush(stdout);
+			if (bgProcessTerminated == true ) {
+				printStatus(&exitStatus);
+				fflush(stdout);
+				bgProcessTerminated = false;
+			}
+			
+			//prompt user input
+			printf(": ");
+			fflush(stdout);
         
 			fflush(stdin);
 	
@@ -312,7 +335,7 @@ int main (void) {
 				//halt program if not background
 				if (pauseShell) {
 					
-					foregroundProcess = spawnId; 
+					foregound_pid = spawnId; 
 					
 					exitStatus.pid = waitpid(spawnId, &childExitMethod, 0);
 					exitStatus.isBackground = false;
@@ -329,7 +352,7 @@ int main (void) {
 					}
 
 
-					foregroundProcess = 0;
+					foregound_pid = 0;
 				}
 				else {
 					printf("background pid is %d\n", spawnId);
