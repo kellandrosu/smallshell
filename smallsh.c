@@ -31,8 +31,9 @@ int bgProcessTerminated = false;		//flag to tell main whether background process
 pid_t bgProcesses[BG_PROC];
 pid_t foreground_pid = 0;
 pid_t deadZombie_pid;						
-struct ProcessExitStatus exitStatus;
-
+struct ProcessExitStatus bgExitStatus;		//store bgExitStatus
+struct ProcessExitStatus fgExitStatus;		//store fgExitStatus
+struct ProcessExitStatus* printStatusPtr;	//points to most recently finished status
 
 
 //PROTOTYPES
@@ -48,34 +49,41 @@ void addBgProcess( pid_t pid) {
 		if ( bgProcesses[i] == 0) {
 			bgProcesses[i] = pid;
 			break;
-} } }
+} 	} 	}
 int removeBgProcess( pid_t pid) {
 	int i;
 	for (i=0; i < BG_PROC; i++) {
 		if ( bgProcesses[i] == pid) {
 			bgProcesses[i] = 0;
 			return true;
-		}
-	}
+	}	}
+	return false;
+}
+int isBgProcess( pid_t pid) {
+	int i;
+	for (i=0; i < BG_PROC; i++) {
+		if ( bgProcesses[i] == pid) {
+			return true;
+	}	}
 	return false;
 }
 
 
 
-//SIGNAL HANDLERS
-// catches child signals
-// records status if child is background processes
-// kills child if zombie
 
+//SIGNAL HANDLERS
+
+// catches child signals
+  // records status if child is background processes
+  // kills child if zombie
 void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 
 	int childExitMethod = -5;
 	pid_t spawnId = info->si_pid;	
 	int result;
 
-	//if the calling process was a killed zombie, or not background, ignore
-	if( spawnId != deadZombie_pid && spawnId != foreground_pid && removeBgProcess(spawnId) ) {
-	
+	//if the calling process was a killed zombie, or foreground, ignore
+	if( spawnId != deadZombie_pid && spawnId != foreground_pid ) {
 		
 		//get the status of the calling process
 		do {
@@ -86,36 +94,33 @@ void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 
 		if ( result == spawnId)  {
 			
-			exitStatus.pid = spawnId;
-			
 			//if child created signal, but exited, then is zombie and needs to die
-			if ( WIFEXITED(childExitMethod) ) {
+			if ( WIFEXITED(childExitMethod) != 0) {
 				
-				exitStatus.code = WEXITSTATUS(childExitMethod);
-				exitStatus.termBySignal = false;
-				exitStatus.isBackground = true;
-
-				bgProcessTerminated = true;
-
-				//so we ignore kill call for zombie processes
+				//if process was bg, need to save exit info
+				if (removeBgProcess(spawnId)) {
+					bgExitStatus.pid = spawnId;
+					bgExitStatus.code = WEXITSTATUS(childExitMethod);
+					bgExitStatus.termBySignal = false;
+					bgExitStatus.isBackground = true;
+					bgProcessTerminated = true;
+				}
+				//flag to ignore kill call for zombie processes
 				deadZombie_pid = spawnId;	
 				
 				kill(spawnId, SIGTERM);
 			}
 
-			//otherwise if it was killed by signal, just get the signal info
-			else if ( WIFSIGNALED(childExitMethod) ) {
-				exitStatus.code = WTERMSIG(childExitMethod);
-				exitStatus.termBySignal = true;
-			
-				if ( foregroundOnly == true ) {
-					exitStatus.isBackground = false;
-				}			
-				else {
-					bgProcessTerminated = true;
-					exitStatus.isBackground = true;
-				}
+			//otherwise if it was bg process killed by signal, just get the signal info
+			else if ( WIFSIGNALED(childExitMethod) !=0  && removeBgProcess(spawnId) ) {
+				bgExitStatus.pid = spawnId;
+				bgExitStatus.code = WTERMSIG(childExitMethod);
+				bgExitStatus.termBySignal = true;
+				bgExitStatus.isBackground = true;
+				
+				bgProcessTerminated = true;
 			}
+			printStatusPtr = &bgExitStatus;
 		}
 	}
 }
@@ -127,22 +132,32 @@ void catchSIGINT(int signo) {
 	int childExitMethod;
 	int result;
 
+	
 	if (foreground_pid != 0) {
 		
+		//send sigterm to kill process without recursive catchSIGINT call
 		do {
 			errno = 0;
 			kill( foreground_pid, SIGTERM);
 			result = waitpid( foreground_pid, &childExitMethod, WNOHANG);
 		} while (errno == EINTR && result == -1);
 
+		//record status
 		if ( foreground_pid == result ) {
-			exitStatus.code = SIGINT;
-			exitStatus.pid = foreground_pid;
-			exitStatus.isBackground = false;
-			exitStatus.termBySignal = true;
+			fgExitStatus.code = SIGINT;
+			fgExitStatus.pid = foreground_pid;
+			fgExitStatus.isBackground = false;
+			fgExitStatus.termBySignal = true;
 			foreground_pid = 0;
+
+			printStatusPtr = &fgExitStatus;
+
+			//prevent holdover from background process
+			if (bgProcessTerminated == true) {
+				bgProcessTerminated = false;
+			}
 		}
-		else if ( result == -1 && errno == EINTR ) {
+		else if ( result == -1 || errno == EINTR ) {
 			char* output = "error\n";
 			write(STDOUT_FILENO, output, 6); 
 		}
@@ -173,7 +188,8 @@ void catchSIGTSTP(int signo) {
 
 int main (void) {
 
-	exitStatus.pid = 0;
+	fgExitStatus.pid = 0;
+	bgExitStatus.pid = 0;
 
 	//VARIABLE DECLARATIONS
 		int i,  result;
@@ -220,8 +236,8 @@ int main (void) {
 
 		
 		// kill child zombie when child terminates
-		SIGCHLD_action.sa_flags = SA_SIGINFO;
 		sigfillset(&SIGCHLD_action.sa_mask);
+		SIGCHLD_action.sa_flags = SA_SIGINFO;
 		SIGCHLD_action.sa_sigaction = catchSIGCHLD;
 
 
@@ -261,7 +277,7 @@ int main (void) {
 		//get user input
 		while(true) {
 			if (bgProcessTerminated == true ) {
-				printStatus(&exitStatus);
+				printStatus(&bgExitStatus);
 				fflush(stdout);
 				bgProcessTerminated = false;
 			}
@@ -287,7 +303,7 @@ int main (void) {
 		}
 		
 		if (bgProcessTerminated == true ) {
-			printStatus(&exitStatus);
+			printStatus(&bgExitStatus);
 			fflush(stdout);
 			bgProcessTerminated = false;
 		}
@@ -326,8 +342,8 @@ int main (void) {
 			continue;
 		}
 		if( strcmp(commandArgs[0], "status") == 0 ) {
-			if ( exitStatus.pid != 0 ) {
-				printStatus(&exitStatus);
+			if ( printStatusPtr == &fgExitStatus || printStatusPtr == &bgExitStatus ) {
+				printStatus(printStatusPtr);
 				fflush(stdout);
 			}
 			continue;
@@ -370,22 +386,29 @@ int main (void) {
 				if (pauseShell) {
 					
 					foreground_pid = spawnId; 
+					fgExitStatus.isBackground = false;
 				
+					//wait for process to finish
+					do {
+						errno = 0;
+						result = waitpid( spawnId, &childExitMethod, 0); 
+					} while ( errno == EINTR && result == -1);
+		
 					//save foreground status
-					exitStatus.pid = waitpid(spawnId, &childExitMethod, 0);
-					exitStatus.isBackground = false;
+					fgExitStatus.pid = result;
 
 					if ( WIFEXITED(childExitMethod) )	{
-						exitStatus.code = WEXITSTATUS(childExitMethod);
-						exitStatus.termBySignal = false;
+						fgExitStatus.code = WEXITSTATUS(childExitMethod);
+						fgExitStatus.termBySignal = false;
 					}
 					else if (WIFSIGNALED(childExitMethod) ) {
-						exitStatus.code = WTERMSIG(childExitMethod);
-						exitStatus.termBySignal = true;
-						printStatus(&exitStatus);
+						fgExitStatus.code = WTERMSIG(childExitMethod);
+						fgExitStatus.termBySignal = true;
+						printStatus(printStatusPtr);
 						fflush(stdout);
 					}
-
+					
+					printStatusPtr = &fgExitStatus;
 
 					foreground_pid = 0;
 				}
