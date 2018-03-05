@@ -15,6 +15,7 @@
 
 #define BUF_LEN 2048
 #define ARG_TOT 512
+#define BG_PROC 128
 
 struct ProcessExitStatus {
 	pid_t pid;
@@ -27,9 +28,10 @@ struct ProcessExitStatus {
 //GLOBAL
 int foregroundOnly = false;				//global mode flag
 int bgProcessTerminated = false;		//flag to tell main whether background process was terminated
-pid_t foregound_pid = 0;
+pid_t bgProcesses[BG_PROC];
+pid_t foreground_pid = 0;
+pid_t deadZombie_pid;						
 struct ProcessExitStatus exitStatus;
-pid_t deadZombiePid;						
 
 
 
@@ -39,18 +41,42 @@ int ioRedirect( char* commandOpts[], int numOpts, int pauseShell) ;
 void printStatus ( struct ProcessExitStatus* process ) ;
 
 
+//BG process array functions
+void addBgProcess( pid_t pid) {
+	int i;
+	for (i=0; i < BG_PROC; i++) {
+		if ( bgProcesses[i] == 0) {
+			bgProcesses[i] = pid;
+			break;
+} } }
+int removeBgProcess( pid_t pid) {
+	int i;
+	for (i=0; i < BG_PROC; i++) {
+		if ( bgProcesses[i] == pid) {
+			bgProcesses[i] = 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+
+
 //SIGNAL HANDLERS
-//catches child signals and kills if child is zombie
+// catches child signals
+// records status if child is background processes
+// kills child if zombie
+
 void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
-	
-	char* newline = "\n";
+
 	int childExitMethod = -5;
 	pid_t spawnId = info->si_pid;	
 	int result;
 
-	//if the calling process was a killed zombie, ignore
-	if( spawnId != deadZombiePid ) {
-
+	//if the calling process was a killed zombie, or not background, ignore
+	if( spawnId != deadZombie_pid && spawnId != foreground_pid && removeBgProcess(spawnId) ) {
+	
+		
 		//get the status of the calling process
 		do {
 			errno = 0;
@@ -58,19 +84,22 @@ void catchSIGCHLD(int signo, siginfo_t* info, void* vp) {
 		} while ( errno == EINTR && result == -1);
 
 
-		if ( spawnId == result ) {
+		if ( result == spawnId)  {
 			
 			exitStatus.pid = spawnId;
 			
 			//if child created signal, but exited, then is zombie and needs to die
-			if ( WIFEXITED(childExitMethod) ) {	
+			if ( WIFEXITED(childExitMethod) ) {
+				
 				exitStatus.code = WEXITSTATUS(childExitMethod);
 				exitStatus.termBySignal = false;
 				exitStatus.isBackground = true;
 
 				bgProcessTerminated = true;
 
-				deadZombiePid = spawnId;	//so we ignore kill call for zombie processes
+				//so we ignore kill call for zombie processes
+				deadZombie_pid = spawnId;	
+				
 				kill(spawnId, SIGTERM);
 			}
 
@@ -98,20 +127,20 @@ void catchSIGINT(int signo) {
 	int childExitMethod;
 	int result;
 
-	if (foregound_pid != 0) {
+	if (foreground_pid != 0) {
 		
 		do {
 			errno = 0;
-			kill( foregound_pid, SIGTERM);
-			result = waitpid( foregound_pid, &childExitMethod, WNOHANG);
+			kill( foreground_pid, SIGTERM);
+			result = waitpid( foreground_pid, &childExitMethod, WNOHANG);
 		} while (errno == EINTR && result == -1);
 
-		if ( foregound_pid == result ) {
+		if ( foreground_pid == result ) {
 			exitStatus.code = SIGINT;
-			exitStatus.pid = foregound_pid;
+			exitStatus.pid = foreground_pid;
 			exitStatus.isBackground = false;
 			exitStatus.termBySignal = true;
-			foregound_pid = 0;
+			foreground_pid = 0;
 		}
 		else if ( result == -1 && errno == EINTR ) {
 			char* output = "error\n";
@@ -191,7 +220,7 @@ int main (void) {
 
 		
 		// kill child zombie when child terminates
-		SIGCHLD_action.sa_flags = SA_SIGINFO | SA_RESTART;
+		SIGCHLD_action.sa_flags = SA_SIGINFO;
 		sigfillset(&SIGCHLD_action.sa_mask);
 		SIGCHLD_action.sa_sigaction = catchSIGCHLD;
 
@@ -200,6 +229,11 @@ int main (void) {
 		sigaction(SIGINT, &SIGINT_action, NULL);
 		sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 		sigaction(SIGCHLD, &SIGCHLD_action, NULL);
+
+	//set bgprocesses array to 0
+	for (i = 0; i<BG_PROC; i++) {
+		bgProcesses[i]=0;
+	}
 
 	//save this process id as int and string
 	int thisPid = getpid();
@@ -335,8 +369,9 @@ int main (void) {
 				//halt program if not background
 				if (pauseShell) {
 					
-					foregound_pid = spawnId; 
-					
+					foreground_pid = spawnId; 
+				
+					//save foreground status
 					exitStatus.pid = waitpid(spawnId, &childExitMethod, 0);
 					exitStatus.isBackground = false;
 
@@ -352,9 +387,10 @@ int main (void) {
 					}
 
 
-					foregound_pid = 0;
+					foreground_pid = 0;
 				}
 				else {
+					addBgProcess(spawnId);
 					printf("background pid is %d\n", spawnId);
 					fflush(stdout);
 				}
