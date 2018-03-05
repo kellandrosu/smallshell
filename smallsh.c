@@ -15,18 +15,27 @@
 #define BUF_LEN 2048
 #define ARG_TOT 512
 
+struct ProcessExitStatus {
+	pid_t pid;
+	int code;
+	int termBySignal;
+	int isBackground;
+};
+
 
 //GLOBAL
 int foregroundOnly = false;
 int bgProcessTerminated = false;
 pid_t foregroundProcess = 0;
-char* statStr = NULL;
+struct ProcessExitStatus exitStatus;
+int zombieKilled;
+
 
 
 //PROTOTYPES
 void parseUserInput( char* userInput, char* commandArgs[], char* commandOpts[], int* numArgs, int* numOpts) ;
 int ioRedirect( char* commandOpts[], int numOpts, int pauseShell) ;
-void getExitStatus( char** statString, int childExitMethod) ;
+void printStatus ( struct ProcessExitStatus* process ) ;
 
 
 //SIGNAL HANDLERS
@@ -39,14 +48,33 @@ void getExitStatus( char** statString, int childExitMethod) ;
 		pid_t spawnId = info->si_pid;	
 		
 		if ( spawnId == waitpid( spawnId, &childExitMethod, WNOHANG) ) {
+			
+			exitStatus.pid = spawnId;
+			
 			//if child  is zombie, and needs to die
 			if ( WIFEXITED(childExitMethod) ) {	
-				getExitStatus( &statStr, childExitMethod );
+				exitStatus.code = WEXITSTATUS(childExitMethod);
+				exitStatus.termBySignal = false;
+				exitStatus.isBackground = true;
+
 				bgProcessTerminated = true;
+
+				zombieKilled = spawnId;
 				kill(spawnId, SIGTERM);
+			
 			}
-//			else if (WIFSIGNALED(childExitMethod)) {
-//			}
+			else if (WIFSIGNALED(childExitMethod) && zombieKilled != spawnId ) {
+				exitStatus.pid = spawnId;
+				exitStatus.code = WTERMSIG(childExitMethod);
+				exitStatus.termBySignal = true;
+				if (foregroundOnly == false) {
+					bgProcessTerminated = true;
+					exitStatus.isBackground = true;
+				}
+				else {
+					exitStatus.isBackground = false;
+				}
+			}
 		}	
 	}
 
@@ -55,10 +83,15 @@ void getExitStatus( char** statString, int childExitMethod) ;
 		
 		int childExitMethod;
 		
+
 		if (foregroundProcess != 0) {
+			
 			kill( foregroundProcess, SIGINT);
 			if ( foregroundProcess == waitpid( foregroundProcess, &childExitMethod, 0) ) {
-				getExitStatus( &statStr, childExitMethod);
+				exitStatus.code = WTERMSIG(childExitMethod);
+				exitStatus.pid = foregroundProcess;
+				exitStatus.isBackground = false;
+				exitStatus.termBySignal = true;
 			}
 			foregroundProcess = 0;
 		}
@@ -69,7 +102,7 @@ void getExitStatus( char** statString, int childExitMethod) ;
 		
 		char* enterMsg = "\nEntering foreground-only mode (& is now ignored)";
 		char* exitMsg = "\nExiting foreground-only mode";
-		
+		char* newline = "\n: ";
 		if ( foregroundOnly == false ) {
 			foregroundOnly = true;
 			write(STDOUT_FILENO, enterMsg, 49);
@@ -78,6 +111,7 @@ void getExitStatus( char** statString, int childExitMethod) ;
 			foregroundOnly = false;
 			write(STDOUT_FILENO, exitMsg, 29);
 		}
+		write(STDOUT_FILENO, newline, 3);
 	}
 
 
@@ -87,6 +121,8 @@ void getExitStatus( char** statString, int childExitMethod) ;
 
 
 int main (void) {
+
+	exitStatus.pid = 0;
 
 	//VARIABLE DECLARATIONS
 		int i,  result;
@@ -166,17 +202,17 @@ int main (void) {
 		numOpts = 0;
 
 		if (bgProcessTerminated == true ) {
-			printf(statStr);
+			printStatus(&exitStatus);
 			fflush(stdout);
 			bgProcessTerminated = false;
 		}
 
+		//get user input
+		while(true) {
 		//prompt user input
 	    printf(": ");
     	fflush(stdout);
         
-		//get user input
-		while(true) {
 			fflush(stdin);
 	
 			inputLength = getline( &rawUserInput, &maxUserInput, stdin);
@@ -187,12 +223,18 @@ int main (void) {
 			}
 			else {
 				rawUserInput[strlen(rawUserInput) - 1]  = '\0';
-			
 				if ( strcmp(rawUserInput, "") != 0 ) {
     	    		break;
 				}
 			}
 		}
+		
+		if (bgProcessTerminated == true ) {
+			printStatus(&exitStatus);
+			fflush(stdout);
+			bgProcessTerminated = false;
+		}
+
 
 	//replace all instances of $$ with pid
 		fixedUserInput[0] = '\0';
@@ -227,8 +269,8 @@ int main (void) {
 			continue;
 		}
 		if( strcmp(commandArgs[0], "status") == 0 ) {
-			if (statStr != NULL) {
-				printf(statStr);
+			if ( exitStatus.pid != 0 ) {
+				printStatus(&exitStatus);
 				fflush(stdout);
 			}
 			continue;
@@ -257,8 +299,8 @@ int main (void) {
 			case 0:
 				if ( ioRedirect( commandOpts, numOpts, pauseShell) == true ) {
 					execvp( commandArgs[0], commandArgs );
+					perror(commandOpts[0]);
 				}
-	//			perror("CHILD: exec failure: ");
 				exit(1); break;
 			//parent
 			default:
@@ -271,11 +313,23 @@ int main (void) {
 				if (pauseShell) {
 					
 					foregroundProcess = spawnId; 
-					waitpid(spawnId, &childExitMethod, 0);
+					
+					exitStatus.pid = waitpid(spawnId, &childExitMethod, 0);
+					exitStatus.isBackground = false;
+
+					if ( WIFEXITED(childExitMethod) )	{
+						exitStatus.code = WEXITSTATUS(childExitMethod);
+						exitStatus.termBySignal = false;
+					}
+					else if (WIFSIGNALED(childExitMethod) ) {
+						exitStatus.code = WTERMSIG(childExitMethod);
+						exitStatus.termBySignal = true;
+						printStatus(&exitStatus);
+						fflush(stdout);
+					}
+
+
 					foregroundProcess = 0;
-					getExitStatus( &statStr, childExitMethod );
-					printf(statStr);
-					fflush(stdout);
 				}
 				else {
 					printf("background pid is %d\n", spawnId);
@@ -285,9 +339,6 @@ int main (void) {
 				break;
 		}	
     }
-
-	if (statStr != NULL ) 
-		free(statStr);
 	
 	if ( rawUserInput != NULL)
     	free (rawUserInput);
@@ -303,25 +354,31 @@ int main (void) {
 /* ------------------------------- FUNCTIONS ---------------------------------- */
 
 
-/*
-	stores the exit status string according to the childExitMethod
-*/
-void getExitStatus( char** statString, int childExitMethod) {
 
-	int result;
+/*
+	prints out the exit status of process that exited
+*/
+void printStatus ( struct ProcessExitStatus* process ) {
+
+	char* signalMsg = "terminated by signal";
+	char* exitMsg = "exit value";
+	char* printMsg;
 	
-	if( WIFEXITED(childExitMethod) ) {
-		result = asprintf( statString, "exit value %d            \n", WEXITSTATUS( childExitMethod ) );
+	if ( process->termBySignal ) {
+		printMsg = signalMsg;
+	} else {
+		printMsg = exitMsg;
 	}
-	else if( WIFSIGNALED(childExitMethod) ) {
-		result = asprintf( statString, "terminated by signal %d  \n", WTERMSIG(childExitMethod));
+
+	if ( bgProcessTerminated == true ) {
+		printf("background pid %d is done: ", process->pid);
+		fflush(stdout);
 	}
-	if (result <= 0 ) {
-		if (statString != NULL) free(statString);
-		statString = NULL;
-	}
+	printf("%s %d\n", printMsg, process->code);
+	fflush(stdout);
 }
 
+/*------------------------------------------------------------------------------*/
 
 /*
 	parse options for io redirect and background
@@ -382,6 +439,8 @@ int ioRedirect( char* commandOpts[], int numOpts, int pauseShell) {
 	return true;
 }
 
+
+/*------------------------------------------------------------------------------*/
 
 /*
 	tokenizes fixedUserInput and points argument and option arrays at tokenized strings
